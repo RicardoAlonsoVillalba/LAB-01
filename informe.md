@@ -1,80 +1,78 @@
-# Informe de laboratorio: Privacidad de datos en PostgreSQL
 
-## 1. Clasificación de datos
-### Matriz de clasificación de atributos
-| Campo | ¿Identifica directamente? | ¿Puede contribuir a identificar? | ¿Requiere protección? | Justificación |
-| :--- | :---: | :---: | :---: | :--- |
-| **id** | No | Sí | No | Identificador interno secuencial; no revela identidad por sí solo. |
-| **nombre** | Sí | Sí | Sí | Dato de identificación directa e explícita. |
-| **correo** | Sí | Sí | Sí | Identificador directo de contacto personal y digital. |
-| **telefono** | Sí | Sí | Sí | Dato de contacto directo del titular. |
-| **rfc** | Sí | Sí | Sí | Clave única de identificación oficial en México. |
-| **edad** | No | Sí | Sí | Cuasi-identificador demográfico. |
-| **ciudad** | No | Sí | Sí | Cuasi-identificador geográfico. |
-| **codigo_postal** | No | Sí | Sí | Cuasi-identificador de ubicación que ayuda a acotar grupos. |
-| **fecha_alta** | No | Sí | No | Dato transaccional y administrativo del sistema. |
-
-### Respuestas teóricas
-* **¿Qué datos permiten identificar directamente a una persona?** Nombre, correo electrónico, teléfono y RFC.
-* **¿Qué datos son cuasi-identificadores?** Edad, ciudad y código postal.
-* **¿Por qué un dato que no identifica directamente puede representar un riesgo de privacidad?** Porque al combinar varios cuasi-identificadores (por ejemplo: edad + código postal) mediante ataques de vinculación, es posible aislar a un individuo dentro de un grupo reducido y reidentificarlo.
+# Informe de laboratorio: Privacidad y Protección de Datos en PostgreSQL
 
 ---
 
-## 2. Enmascaramiento de datos (Masking)
-* **Objetivo:** Permitir al rol de `soporte` visualizar información parcial necesaria para la operación sin exponer la PII completa.
-* **Implementación:** Se construyó la vista `v_clientes_soporte` utilizando funciones de texto (`CONCAT`, `LEFT`, `RIGHT`, `SUBSTRING`, `POSITION`) para ocultar caracteres sensibles de correo, teléfono y RFC.
-* **Acceso restringido:** Se otorgó `SELECT` sobre la vista al rol `soporte` y se denegó el acceso directo a la tabla `public.clientes`.
+## 19. Informe
+
+### 19.1 Clasificación
+Los datos personales que requieren protección dentro de la base de datos son:
+* **Identificadores directos:** Nombre, correo electrónico, teléfono y RFC. Requieren protección estricta porque revelan directamente la identidad única e inequívoca del titular de la información.
+* **Cuasi-identificadores:** Edad, ciudad y código postal. Requieren protección o manipulación (generalización) porque, aunque aislados no identifican a una persona, al combinarse entre sí mediante ataques de vinculación pueden aislar a un individuo dentro de un grupo reducido y reidentificarlo.
+
+### 19.2 Enmascaramiento
+* **Qué se ocultó:** Se ocultaron parcialmente los caracteres del correo electrónico, número telefónico y RFC.
+* **Para quién:** Para los usuarios pertenecientes al rol operativo de `soporte`.
+* **Por qué:** Para aplicar el principio de minimización de datos. El personal de soporte técnico solo requiere confirmar la identidad o verificar datos de contacto parciales, sin necesidad de visualizar la información sensible de forma expuesta.
+* **Mecanismo utilizado:** Se creó una vista dinámica (`v_clientes_soporte`) utilizando funciones de manipulación de texto en SQL (`CONCAT`, `LEFT`, `RIGHT`, `SUBSTRING`, `POSITION`) para reemplazar los caracteres intermedios por asteriscos o caracteres de enmascaramiento.
+
+### 19.3 Seudonimización
+* **Cómo se generaron los tokens:** Se utilizaron identificadores únicos universales versión 4 (UUID v4) generados dinámicamente mediante la función `gen_random_uuid()` de la extensión `pgcrypto`.
+* **Dónde se encuentra el mapa de correspondencia:** En el esquema privado `pii`, dentro de la tabla de mapeo `pii.mapa_cliente`.
+* **Quién debería poder acceder a él:** Únicamente los administradores del sistema, el Oficial de Protección de Datos (DPO) o procesos automatizados con privilegios elevados y auditados.
+* **Por qué se separaron los permisos:** Para evitar la reidentificación directa por parte del rol de analítica, garantizando que este solo pueda consultar datos desacoplados de la identidad real del usuario.
+
+### 19.4 Anonimización
+* **Identificadores eliminados:** Nombre, correo electrónico, teléfono, RFC e ID secuencial original.
+* **Atributos generalizados:** La edad (convertida en rangos: `18-30`, `31-45`, `46+`) y la ubicación geográfica (reduciendo el código postal a sus primeros 1 o 2 dígitos para representar regiones amplias).
+* **Grupos suprimidos:** Aquellas combinaciones de datos (cuasi-identificadores agrupados) cuya frecuencia de registros fuera inferior al umbral $k$ ($k < 5$), aplicando la cláusula `HAVING COUNT(*) >= 5`.
+* **Riesgo de reidentificación permanente:** Existe un riesgo residual si los datos anonimizados se cruzan o vinculan con bases de datos externas públicas o adicionales (*linkage attack*).
+
+### 19.5 Retención
+* **Criterio utilizado:** Criterio temporal basado en el ciclo de vida de los datos. Se identifican registros con una antigüedad de alta superior a 5 años (`fecha_alta < CURRENT_DATE - INTERVAL '5 years'`).
+* **Información a conservar:** Datos mínimos necesarios para el cumplimiento de obligaciones legales, fiscales o auditorías que por ley exijan un periodo de conservación específico.
+* **Información a eliminar:** Datos personales directos y registros de usuarios inactivos o sin obligaciones contractuales vigentes.
+* **Controles previos a la eliminación:**
+  1. Aprobación formal por parte del área Legal y del Oficial de Protección de Datos (DPO).
+  2. Generación de un respaldo inmutable (*backup*) cifrado antes de la purga.
+  3. Registro y auditoría formal del proceso de borrado (*audit logs*).
+
+### 19.6 Conclusiones
+* **Área de soporte:** **Enmascaramiento de datos (Data Masking)** mediante vistas. Permite operar y validar usuarios sin exponer la PII completa.
+* **Área de analítica:** **Seudonimización** (reemplazo por tokens UUID). Permite realizar estudios de comportamiento y modelos de datos sin vincular directamente la identidad real del usuario.
+* **Publicar estadísticas:** **Anonimización y $k$-anonimato** (generalización y supresión). Garantiza que los conjuntos de datos públicos no permitan reidentificar a ningún individuo.
+* **¿Por qué ninguna técnica sustituye al control de acceso?:** Porque el enmascaramiento, seudonimización y anonimización modifican o estructuran la información, pero sin un control de acceso riguroso (roles, permisos `GRANT`/`REVOKE`, autenticación), cualquier usuario no autorizado podría consultar, modificar o eludir las vistas y tablas subyacentes donde reside la información original.
 
 ---
 
-## 3. Seudonimización
-* **Estrategia:** Separación del conjunto de datos en dos esquemas independientes: `pii` (contiene la tabla de correspondencia `mapa_cliente` con tokens UUID) y `analitica` (contiene la tabla `clientes` vinculada únicamente por token).
-* **Mecanismo:** Generación de UUIDs v4 mediante la extensión `pgcrypto`.
+## 20. Preguntas de reflexión
 
----
+1. **¿Cuál es la diferencia entre enmascaramiento y seudonimización?**  
+   El enmascaramiento oculta visualmente parte de los caracteres de un dato sensible manteniendo su formato original para un uso operativo parcial, mientras que la seudonimización reemplaza por completo el identificador por un código irreconocible (token/UUID), separando la identidad del resto de la información.
 
-## 4. Separación de funciones (Separation of Duties)
-* **Control:** El rol `analista` únicamente tiene permiso de lectura en `analitica.clientes`. Se le denegó explícitamente el acceso a `pii.mapa_cliente` y a `public.clientes`.
-* **Respuestas de evaluación:**
-  1. **¿Qué ocurriría si analista pudiera consultar también `pii.mapa_cliente`?** Podría realizar un `JOIN` entre el token y el ID original, revirtiendo la seudonimización y reidentificando a los clientes.
-  2. **¿Qué principio de seguridad se está aplicando al separar ambos accesos?** Principio de menor privilegio y separación de funciones (*Separation of Duties*).
-  3. **¿Por qué la seudonimización no equivale a anonimización?** Porque la seudonimización es un proceso reversible si se cuenta con la información adicional (el mapa de llaves o tokens), mientras que la anonimización busca ser irreversible.
-  4. **¿Qué información permite volver a relacionar el token con una persona?** La tabla de correspondencia `pii.mapa_cliente`, que vincula el `token` UUID con el `cliente_id`.
+2. **¿Por qué la seudonimización no significa anonimización?**  
+   Porque la seudonimización es un proceso **reversible** si se cuenta con la tabla o mapa de correspondencia entre el token y la PII original. La anonimización busca ser **irreversible**.
 
----
+3. **¿Por qué eliminar nombre y RFC no garantiza que un conjunto de datos sea anónimo?**  
+   Porque persisten los cuasi-identificadores (como edad, código postal o género) que, al combinarse, permiten realizar un aislamiento por combinación (*singling out*) y reidentificar individualmente a un usuario.
 
-## 5. Anonimización y k-anonimato
-* **Técnicas aplicadas:**
-  * **Generalización de edad:** Agrupación por rangos (`18-30`, `31-45`, `46+`).
-  * **Generalización de región:** Extracción de los primeros dígitos del código postal (`LEFT(codigo_postal, 2)`).
-  * **Supresión por k-anonimato:** Filtrado mediante `HAVING COUNT(*) >= 5` para eliminar grupos pequeños expuestos a reidentificación.
+4. **¿Qué función tienen los cuasi-identificadores?**  
+   Sirven para contextualizar la información en análisis demográficos o geográficos, pero requieren especial atención porque son los atributos que facilitan los ataques de reidentificación por vinculación con otras fuentes de datos.
 
-### Análisis de riesgo de reidentificación
-1. **Identificadores eliminados:** Nombre, correo, teléfono y RFC.
-2. **Cuasi-identificadores remanentes:** Rango de edad y región (código postal parcial).
-3. **Combinaciones de riesgo:** La intersección de un rango de edad específico con una región geográfica pequeña.
-4. **Grupos con pocos registros:** Aumentan drásticamente el riesgo de reidentificación por aislamiento.
-5. **Atributos a generalizar:** Edades exactas, códigos postales detallados y fechas completas.
-6. **Información a suprimir:** Grupos de registros que no alcancen el umbral $k$ establecido.
-7. **¿Es "100% anónimo"?:** No. No existe el anonimato absoluto; siempre persiste un riesgo residual si los datos se cruzan con fuentes de datos externas o públicas.
+5. **¿Por qué es importante separar el mapa de seudonimización?**  
+   Para evitar que un usuario con privilegios analíticos o de consulta general pueda realizar un `JOIN` entre el token seudonimizado y la tabla que contiene las identidades reales.
 
----
+6. **¿Qué principio de seguridad se aplica al impedir que el analista acceda al mapa?**  
+   El principio de **menor privilegio** (*Principle of Least Privilege*) y la **separación de funciones** (*Separation of Duties*).
 
-## 6. Reto de mayor generalización
-* **Cambio realizado:** Se modificó la extracción geográfica de `LEFT(codigo_postal, 2)` a `LEFT(codigo_postal, 1)`.
-* **Motivo:** Aumentar la densidad de registros por grupo al abarcar macro-regiones o estados enteros.
-* **Resultado obtenido:** Se reduce la granularidad geográfica y se incrementa el tamaño de los grupos.
-* **Riesgo reducido:** Mitigación del ataque por aislamiento espacial en zonas poco pobladas.
+7. **¿Por qué una vista puede ser preferible a entregar acceso directo a la tabla?**  
+   Porque una vista actúa como una capa de abstracción y control centralizado que permite exponer únicamente los campos y formatos estrictamente necesarios para un rol, protegiendo los datos subyacentes de la tabla real.
 
----
+8. **¿Qué diferencia existe entre proteger un dato para visualización y protegerlo contra acceso no autorizado?**  
+   Protegerlo para visualización (como el enmascaramiento) modifica la presentación de la información expuesta a usuarios legítimos, mientras que protegerlo contra acceso no autorizado implica establecer restricciones de seguridad a nivel de motor (permisos SQL, autenticación y cifrado) para evitar que el dato sea leído o extraído por quien no tiene privilegios.
 
-## 7. Retención y ciclo de vida de los datos
-* **Consulta de identificación:** `SELECT * FROM clientes WHERE fecha_alta < CURRENT_DATE - INTERVAL '5 years';`
-* **Política y procedimiento:**
-  * **Registros afectados:** Clientes con antigüedad mayor a 5 años sin actividad contractual.
-  * **Justificación:** Cumplimiento de obligaciones fiscales/legales y principio de minimización de almacenamiento.
-  * **Aprobaciones necesarias:** Autorización formal del DPO (Oficial de Protección de Datos) y el área Legal.
-  * **Respaldo previo:** Generación de copia de seguridad inmutable (*cold storage*) cifrada antes de cualquier purga.
-  * **Evidencia de purga:** Registro en bitácoras (*audit logs*) del sistema con firma digital.
-  * **Recuperación accidental:** Restauración desde *snapshot* incremental en un entorno aislado de recuperación.
+9. **¿Por qué la retención forma parte de la protección de datos?**  
+   Porque se fundamenta en el principio de minimización y limitación del plazo de conservación: conservar datos que ya no son necesarios incrementa innecesariamente la superficie de impacto ante incidentes de seguridad o fugas de información.
+
+10. **¿Qué riesgo existe si una organización conserva información indefinidamente?**  
+    Aumenta sustancialmente el riesgo de exposición masiva frente a ciberataques, genera posibles sanciones por incumplimiento de normativas de privacidad (como RGPD o LFPDPPP) e incrementa los costos y la complejidad en la gestión y custodia de la infraestructura.
